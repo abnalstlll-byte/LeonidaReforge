@@ -1,64 +1,108 @@
 name: Bug report
-description: The build stops, a tool fails, or a shader or asset comes out wrong.
+description: Report a build failure, tool error, or synthetic test regression (DX-09).
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Search open and closed issues for the error text first, and comment there if it is already reported.
-        **Never attach or quote game files**, extracted assets or generated shaders (DXBC, FSSM, disassembly,
-        SPIR-V). Remove local paths, credentials, personal data and game-derived content from logs. Only
-        version 1.0.2.1 of your own Xbox Series package is supported; do not ask how to obtain the game.
-        For vulnerabilities, see the security policy rather than filing a public issue.
+        ### Reproducible Minimal Bug Report Guidelines (DX-09)
+        Search open and closed issues first. **Strict Clean-Room Policy**: Never attach retail game executables, carved packages, shaders (DXBC, FSSM, disassembly, SPIR-V), textures, audio, decryption keys, or logs containing proprietary assets. All reproductions must use **synthetic fixtures** or standard repository tools.
   - type: input
     id: summary
     attributes:
-      label: What happens
-      description: One sentence, with the exact error text if there is one.
+      label: Summary
+      description: Concise one-line description of the failure or regression.
     validations:
       required: true
   - type: input
     id: commit
     attributes:
-      label: Commit
-      description: The commit you built from (`git rev-parse --short HEAD`), or the date you downloaded it.
+      label: Exact Git Commit
+      description: The exact commit hash tested (`git rev-parse HEAD`), base branch, and whether local changes exist.
+      placeholder: "e.g. 2ebde81ec (on main / integration/ci-recovery, clean working tree)"
     validations:
       required: true
-  - type: input
-    id: system
+  - type: textarea
+    id: environment
     attributes:
-      label: System
-      description: OS, CPU, GPU and driver version, and the Python, LLVM and Vulkan SDK versions if the build failed.
-      placeholder: Windows 11 24H2, Ryzen 5 7600, RX 7800 XT (Adrenalin 25.10.1), Python 3.12.7, LLVM 21.1.8, Vulkan SDK 1.4.328
+      label: Environment & Toolchain Breakdown
+      description: Specify OS, CPU, GPU, driver, compiler, Python, and SDK versions.
+      placeholder: |
+        - OS: Windows 11 (build 26300) / Ubuntu 24.04 / macOS 15.2 (Apple Silicon)
+        - CPU / RAM: AMD Ryzen 9 7900X / 32 GB
+        - GPU / Driver: NVIDIA GeForce RTX 4070 (driver 572.16) / RADV Mesa 24.2 / MoltenVK 1.4.2
+        - Compiler / Toolchain: MSVC 19.44 / GCC 14.2 / Clang 19
+        - Python / CMake / Vulkan: Python 3.12.7, CMake 3.28, Vulkan SDK 1.4.304
     validations:
       required: true
   - type: dropdown
-    id: stage
+    id: subsystem
     attributes:
-      label: Where
+      label: Subsystem
       options:
-        - Finding the game (--find)
-        - check
-        - shaders
-        - assets
-        - runtime
-        - pipelines
-        - Running gta6rt
-        - A tool run by hand (tools/, scripts/)
+        - "Runtime / Vulkan shims (runtime/)"
+        - "Shader translator / RDNA2 to SPIR-V (tools/rdna2spirv.py)"
+        - "Tools & Pipeline builders (make_game.py, tools/)"
+        - "Map Viewer & Streaming (viewer/)"
+        - "Semantic / Synthetic test suite (tests/)"
+        - "CI / Workflow automation (.github/workflows/)"
     validations:
       required: true
   - type: textarea
-    id: command
+    id: command_steps
     attributes:
-      label: Command and steps
-      description: How you started it (`Build.bat` or the exact `make_game.py` command) and whether it happens every time.
+      label: Exact Reproduction Command and Steps
+      description: The exact terminal command(s) and sequence to reproduce the failure.
+      placeholder: |
+        python -I scripts/smoke.py --quick
+        # or:
+        python -m unittest discover -s tests/semantic -p test_float_nan_fract.py
     validations:
       required: true
   - type: textarea
-    id: output
+    id: expected
     attributes:
-      label: Output
-      description: Sanitized console output for the failing stage, with game-derived content and local paths removed.
+      label: Expected Behavior
+      description: What should happen according to docs/design.md, ISA specifications, or API contracts.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior & Error Output
+      description: The sanitized console output or stack trace showing the exact failure.
       render: text
     validations:
       required: true
+  - type: textarea
+    id: synthetic_repro
+    attributes:
+      label: Sanitized Synthetic Reproduction
+      description: Minimal synthetic code snippet, hand-written assembly fixture, or unit test case reproducing the issue with zero game data.
+      placeholder: |
+        # Minimal synthetic reproduction without retail assets:
+        v_min_f32_e32 v0, v1, v2
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: provenance
+    attributes:
+      label: Evidence Provenance
+      description: Distinguish current measured results from historical claims.
+      options:
+        - label: This report is based on current measurements reproduced on the specified commit.
+          required: true
+        - label: Historical claims from the original project (if any) are explicitly cited as hypothesis.
+          required: false
+  - type: checkboxes
+    id: clean_room_checklist
+    attributes:
+      label: Clean-Room Compliance Checklist
+      options:
+        - label: I confirm this report contains NO retail game files, proprietary shaders, keys, or decryption workarounds.
+          required: true
+        - label: All inputs in this reproduction are synthetic, hand-authored, or redistributable.
+          required: true
+        - label: I have verified scripts/check_no_game_data.py passes on any proposed fixture.
+          required: true

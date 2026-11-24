@@ -50,6 +50,28 @@ This page collects the setup steps and the problems testers have run into so far
   - macOS: `brew install llvm molten-vk vulkan-headers vulkan-loader spirv-tools vulkan-tools`. The test programs
     load MoltenVK directly; set `LEONIDA_VULKAN_LOADER` to use the Vulkan loader instead.
 
+## Reporting reproducible bugs (DX-09)
+
+To ensure bugs can be diagnosed, reproduced, and verified across contributor environments:
+
+1. **Check Existing Reports**:
+   Search open and closed issues first. If a report already exists for the failure, add your exact system details and reproducible measurement to that thread.
+
+2. **Commit and Environment**:
+   Always quote the exact commit hash (`git rev-parse HEAD`), base branch, and whether local changes exist. Include the complete OS, CPU, GPU, driver, and compiler breakdown.
+
+3. **Minimal Sanitized Reproduction**:
+   Every report must provide a minimal, hand-authored synthetic reproduction without retail assets:
+   - For translator issues: a minimal hand-written `.asm` snippet or synthetic fixture in `tests/semantic/`.
+   - For tools issues: the exact command with synthetic inputs or CLI options.
+   - For runtime issues: a minimal standalone test fixture under `runtime/test/`.
+
+4. **Separate Historical Claims from Current Evidence**:
+   Explicitly distinguish fresh measurements made on the quoted commit from historical claims or unverified assumptions inherited from previous repositories.
+
+5. **Strict Clean-Room Adherence**:
+   Never attach retail game executables, carved packages, shaders (DXBC, FSSM, disassembly, SPIR-V), textures, audio, or decryption keys. Verify that `python -I scripts/check_no_game_data.py <files>` passes before sharing any file.
+
 ## Build the test programs
 
 On a Windows runtime build with Vulkan enabled, CMake only registers `d3d12_translated_draw`, `d3d12_m2_textured`,
