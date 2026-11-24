@@ -233,6 +233,11 @@ class RunnerTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("no test*.py files", out)
 
+    def test_cli_reconfigures_streams_cleanly(self):
+        result = cli("unused-suite", "-h")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Run the translator regression suite", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

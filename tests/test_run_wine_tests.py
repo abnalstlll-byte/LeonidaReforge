@@ -728,6 +728,12 @@ class MainTest(unittest.TestCase):
         with self.assertRaises(argparse.ArgumentTypeError):
             rwt.wine_command("   ")
 
+    def test_cli_help_under_python_isolated(self):
+        result = subprocess.run([sys.executable, "-I", str(Path(rwt.__file__).resolve()), "--help"],
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Run the Windows build's CTest tests under Wine", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -224,17 +224,22 @@ jobs:
         run: |
           python -m unittest discover -s tests/semantic > "$RUNNER_TEMP/semantic.log" 2>&1 &
           semantic=$!
+          failed=()
           while IFS= read -r t; do
             if grep -Eq "$PYTEST_FILE_MARKERS" "$t" || ! grep -q '__main__' "$t"; then
               continue
             fi
             echo "== $t"
-            python -I "$t" || exit 1
+            python -I "$t" || failed+=("$t")
           done < <(find tests -path 'tests/semantic' -prune -o -type f -name 'test_*.py' -print | LC_ALL=C sort)
           status=0
           wait "$semantic" || status=$?
           echo "== tests/semantic"
           cat "$RUNNER_TEMP/semantic.log"
+          if (( ${#failed[@]} )); then
+            for t in "${failed[@]}"; do echo "::error file=$t::$t failed"; done
+            status=1
+          fi
           exit "$status"
       - name: Install llvm-mc and SPIRV-Tools
         run: |
@@ -293,10 +298,15 @@ jobs:
       - name: Tests (standard library only, Linux)
         shell: bash
         run: |
+          failed=()
           while IFS= read -r t; do
             if grep -Eq "$PYTEST_FILE_MARKERS" "$t" || ! grep -q '__main__' "$t"; then
               continue
             fi
             echo "== $t"
-            python -I "$t" || exit 1
+            python -I "$t" || failed+=("$t")
           done < <(find tests -path 'tests/semantic' -prune -o -type f -name 'test_*.py' -print | LC_ALL=C sort)
+          if (( ${#failed[@]} )); then
+            for t in "${failed[@]}"; do echo "::error file=$t::$t failed"; done
+            exit 1
+          fi

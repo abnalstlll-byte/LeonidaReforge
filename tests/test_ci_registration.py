@@ -626,6 +626,18 @@ class StdlibLoopTest(unittest.TestCase):
         self.assertIn('python -I "$t"', script)
         self.assertIn("-name 'test_*.py'", script)
 
+    def test_linux_stdlib_step_collects_all_failures(self):
+        script = step_script(ROOT, "Tests (standard library only, Linux)")
+        self.assertIn('failed=()', script)
+        self.assertIn('python -I "$t" || failed+=("$t")', script)
+        self.assertIn('::error file=$t::$t failed', script)
+
+    def test_macos_stdlib_step_collects_all_failures(self):
+        script = step_script(ROOT, "Translator semantic tests and tests (standard library only, no game data)")
+        self.assertIn('failed=()', script)
+        self.assertIn('python -I "$t" || failed+=("$t")', script)
+        self.assertIn('::error file=$t::$t failed', script)
+
 
 if __name__ == "__main__":
     unittest.main()
