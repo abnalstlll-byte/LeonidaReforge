@@ -422,6 +422,203 @@ def _tls_callbacks(img: PeImage) -> int:
     return count
 
 
+def _inspect_pdata(img: PeImage) -> dict:
+    """Exception Directory (.pdata / DIR_EXCEPTION = 3) validation and function table parsing.
+
+    Matches runtime/src/pe_loader.cpp (Loader::register_unwind) bounds, sorting, non-overlapping intervals,
+    and zero-length entries (e.g. symcryptk.dll). Non-x64 architectures (e.g. x86, ARM64) do not use x64
+    12-byte RUNTIME_FUNCTION tables and are gracefully rejected with informative format metadata.
+    """
+    rva, size = img.directory(DIR_EXCEPTION)
+    present = bool(rva and size)
+    if not present:
+        return {
+            "present": False,
+            "rva": "0x0",
+            "size": 0,
+            "entry_count": 0,
+            "parsed_count": 0,
+            "trailing_bytes": 0,
+            "mapped": False,
+            "truncated": False,
+            "zero_length_count": 0,
+            "inverted_count": 0,
+            "out_of_bounds_count": 0,
+            "unsorted_count": 0,
+            "overlap_count": 0,
+            "min_begin": None,
+            "max_end": None,
+            "valid": True,
+            "sample_errors": [],
+        }
+
+    is_x64 = img.machine == 0x8664
+    is_arm64 = img.machine == 0xAA64
+    entry_size = 8 if is_arm64 else 12
+    entry_count = size // entry_size
+    trailing_bytes = size % entry_size
+
+    bounds = img._range(rva)
+
+    if not is_x64:
+        if is_arm64:
+            fmt = "arm64"
+            reason = "ARM64 architecture uses 8-byte packed unwind records (not 12-byte RUNTIME_FUNCTION)"
+        elif img.machine == 0x14C:
+            fmt = "non-x64"
+            reason = "x86 architecture uses stack-based SEH (no 12-byte RUNTIME_FUNCTION table)"
+        else:
+            fmt = f"unsupported ({MACHINES.get(img.machine, hex(img.machine))})"
+            reason = f"unsupported machine architecture 0x{img.machine:x} (not x86-64)"
+        if bounds is None:
+            mapped = False
+            truncated = False
+        else:
+            start, end = bounds
+            mapped = True
+            needed_bytes = entry_count * entry_size
+            truncated = max(0, end - start) < needed_bytes
+        return {
+            "present": True,
+            "rva": hex(rva),
+            "size": size,
+            "entry_count": entry_count,
+            "parsed_count": 0,
+            "trailing_bytes": trailing_bytes,
+            "mapped": mapped,
+            "truncated": truncated,
+            "zero_length_count": 0,
+            "inverted_count": 0,
+            "out_of_bounds_count": 0,
+            "unsorted_count": 0,
+            "overlap_count": 0,
+            "min_begin": None,
+            "max_end": None,
+            "valid": True,
+            "sample_errors": [],
+            "format": fmt,
+            "rejection_reason": reason,
+        }
+
+    if bounds is None:
+        return {
+            "present": True,
+            "rva": hex(rva),
+            "size": size,
+            "entry_count": entry_count,
+            "parsed_count": 0,
+            "trailing_bytes": trailing_bytes,
+            "mapped": False,
+            "truncated": False,
+            "zero_length_count": 0,
+            "inverted_count": 0,
+            "out_of_bounds_count": 0,
+            "unsorted_count": 0,
+            "overlap_count": 0,
+            "min_begin": None,
+            "max_end": None,
+            "valid": False,
+            "sample_errors": [{"index": 0, "begin": "0x0", "end": "0x0", "unwind": "0x0", "reason": "unmapped"}],
+        }
+
+    start, end = bounds
+    available = max(0, end - start)
+    needed_bytes = entry_count * 12
+    truncated = available < needed_bytes
+    can_parse = min(needed_bytes, available) // 12
+    parsed_count = can_parse
+    mv = memoryview(img.data)
+    pdata_view = mv[start:start + can_parse * 12]
+
+    previous_begin = 0
+    previous_end = 0
+    min_begin = None
+    max_end = None
+    zero_length_count = 0
+    inverted_count = 0
+    out_of_bounds_count = 0
+    unsorted_count = 0
+    overlap_count = 0
+    sample_errors = []
+
+    def add_error(idx: int, b: int, e: int, u: int, reason: str) -> None:
+        if len(sample_errors) < 5:
+            sample_errors.append({
+                "index": idx,
+                "begin": hex(b),
+                "end": hex(e),
+                "unwind": hex(u),
+                "reason": reason,
+            })
+
+    for i, (b, e, u) in enumerate(struct.iter_unpack("<III", pdata_view)):
+        if min_begin is None or b < min_begin:
+            min_begin = b
+        if max_end is None or e > max_end:
+            max_end = e
+
+        entry_failed = False
+
+        if b == e:
+            zero_length_count += 1
+        elif e < b:
+            inverted_count += 1
+            add_error(i, b, e, u, "inverted")
+            entry_failed = True
+
+        info = u & ~1
+        if (b > img.size_of_image or e > img.size_of_image
+                or info > img.size_of_image or (img.size_of_image - info < 4)):
+            out_of_bounds_count += 1
+            if not entry_failed:
+                add_error(i, b, e, u, "out_of_bounds")
+                entry_failed = True
+
+        if i > 0:
+            if b < previous_begin:
+                unsorted_count += 1
+                if not entry_failed:
+                    add_error(i, b, e, u, "unsorted")
+                    entry_failed = True
+            elif b < previous_end:
+                overlap_count += 1
+                if not entry_failed:
+                    add_error(i, b, e, u, "overlap")
+                    entry_failed = True
+
+        previous_begin = b
+        if e >= b:
+            previous_end = max(previous_end, e)
+
+    valid = (
+        not truncated
+        and inverted_count == 0
+        and out_of_bounds_count == 0
+        and unsorted_count == 0
+        and overlap_count == 0
+    )
+
+    return {
+        "present": True,
+        "rva": hex(rva),
+        "size": size,
+        "entry_count": entry_count,
+        "parsed_count": parsed_count,
+        "trailing_bytes": trailing_bytes,
+        "mapped": True,
+        "truncated": truncated,
+        "zero_length_count": zero_length_count,
+        "inverted_count": inverted_count,
+        "out_of_bounds_count": out_of_bounds_count,
+        "unsorted_count": unsorted_count,
+        "overlap_count": overlap_count,
+        "min_begin": hex(min_begin) if min_begin is not None else None,
+        "max_end": hex(max_end) if max_end is not None else None,
+        "valid": valid,
+        "sample_errors": sample_errors,
+    }
+
+
 _apiset_cache: dict[str, bool] = {}
 
 
@@ -528,7 +725,7 @@ def _inspect(path: str, game_dir: str | None) -> dict:
     loads = dll_strings(img.data, {i["dll"].lower() for i in imports}, own_names)
     for entry in loads:
         entry["where"] = classify_dll(entry["name"], game_dir)
-    pdata_rva, pdata_size = img.directory(DIR_EXCEPTION)
+    pdata = _inspect_pdata(img)
     reloc_rva, reloc_size = img.directory(DIR_BASERELOC)
 
     return {
@@ -551,13 +748,43 @@ def _inspect(path: str, game_dir: str | None) -> dict:
         "forwarder_count": len(exp["forwarders"]),
         "invalid_export_count": exp["invalid_export_count"],
         "invalid_exports": exp["invalid_exports"],
-        "pdata_functions": pdata_size // 12 if pdata_rva and pdata_size >= 12 else 0,
+        "pdata_functions": pdata["entry_count"],
+        "pdata": pdata,
         "tls_callbacks": _tls_callbacks(img),
         "runtime_load_candidates": loads,
     }
 
 
 def to_markdown(r: dict) -> str:
+    pdata_summary = f"{r['pdata_functions']:,}"
+    p = r.get("pdata")
+    if p and p.get("present"):
+        if p.get("format"):
+            pdata_summary += f" ({p['format']})"
+        elif p.get("valid"):
+            notes = []
+            if p.get("zero_length_count"):
+                notes.append(f"{p['zero_length_count']} zero-length")
+            if p.get("trailing_bytes"):
+                notes.append(f"{p['trailing_bytes']} trailing bytes ignored")
+            suffix = f", {', '.join(notes)}" if notes else ""
+            pdata_summary += f" (OK{suffix})"
+        else:
+            issues = []
+            if not p.get("mapped"):
+                issues.append("unmapped")
+            if p.get("truncated"):
+                issues.append("truncated")
+            if p.get("inverted_count"):
+                issues.append(f"{p['inverted_count']} inverted")
+            if p.get("out_of_bounds_count"):
+                issues.append(f"{p['out_of_bounds_count']} out of bounds")
+            if p.get("unsorted_count"):
+                issues.append(f"{p['unsorted_count']} unsorted")
+            if p.get("overlap_count"):
+                issues.append(f"{p['overlap_count']} overlapping")
+            pdata_summary += f" (INVALID: {', '.join(issues)})"
+
     exp_summary = f"{r['export_count']:,}"
     fwd_count = r.get("forwarder_count", 0)
     inv_count = r.get("invalid_export_count", 0)
@@ -576,7 +803,7 @@ def to_markdown(r: dict) -> str:
            f"- image base {r['image_base']}, size {r['size_of_image']:,}, entry RVA {r['entry_rva']}",
            f"- relocations: {'yes' if r['has_relocs'] else 'NO (must load at preferred base)'}; "
            f"ASLR flag: {r['dynamic_base']}",
-           f"- .pdata functions: {r['pdata_functions']:,}; TLS callbacks: {r['tls_callbacks']}; exports: {exp_summary}",
+           f"- .pdata functions: {pdata_summary}; TLS callbacks: {r['tls_callbacks']}; exports: {exp_summary}",
            "", "## Sections", "", "| name | rva | vsize | exec | write | entropy | |", "|---|---|---|---|---|---|---|"]
     for s in r["sections"]:
         flag = "**encrypted?**" if s["looks_encrypted"] else ""
@@ -699,7 +926,15 @@ def main(argv: list[str] | None = None) -> int:
             continue
         enc = [s["name"] for s in r["sections"] if s["looks_encrypted"]]
         shim = sum(len(i["functions"]) for i in r["imports"] if i["where"] == "shim")
-        print(f"{r['file']:<40} {r['machine']:<7} subsys={r['subsystem']!s:<7} pdata={r['pdata_functions']:<7} "
+        pdata_status = ""
+        p = r.get("pdata")
+        if p and p.get("present"):
+            if p.get("format"):
+                pdata_status = p["format"]
+            else:
+                pdata_status = "OK" if p.get("valid") else "INVALID"
+        pdata_col = f"{r['pdata_functions']} {pdata_status}".strip()
+        print(f"{r['file']:<40} {r['machine']:<7} subsys={r['subsystem']!s:<7} pdata={pdata_col:<9} "
               f"shim-imports={shim:<5} encrypted={','.join(enc) or '-'}")
     return rc
 

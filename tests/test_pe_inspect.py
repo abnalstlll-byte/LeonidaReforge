@@ -1224,5 +1224,73 @@ class TestExportForwarders(unittest.TestCase):
             pe_inspect.PeImage(bytes(data_hdr_overflow))
 
 
+class TestExceptionDirectoryArchitectureValidation(unittest.TestCase):
+    """Clean-room unit tests ensuring non-x64 machine architectures (e.g. i386, ARM64)
+    gracefully reject 12-byte RUNTIME_FUNCTION parsing with informative diagnostics."""
+
+    def test_x86_machine_exception_directory_rejected_as_non_x64(self):
+        # 32-bit x86 image (IMAGE_FILE_MACHINE_I386 = 0x14C)
+        data = build_image(is64=False, with_directories=True)
+        img = pe_inspect.PeImage(data)
+        pdata = pe_inspect._inspect_pdata(img)
+        self.assertTrue(pdata["present"])
+        self.assertEqual(pdata["format"], "non-x64")
+        self.assertEqual(pdata["parsed_count"], 0)
+        self.assertIn("x86", pdata["rejection_reason"])
+        self.assertIn("stack-based SEH", pdata["rejection_reason"])
+
+        with tempfile.NamedTemporaryFile(suffix=".dll", delete=False) as f:
+            f.write(data)
+            f.flush()
+            tmp_path = f.name
+        try:
+            report = pe_inspect.inspect(tmp_path, None)
+            md = pe_inspect.to_markdown(report)
+            self.assertIn("(non-x64)", md)
+            self.assertNotIn("(OK)", md)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_arm64_machine_exception_directory_rejected_as_arm64(self):
+        # ARM64 image (IMAGE_FILE_MACHINE_ARM64 = 0xAA64)
+        buf = bytearray(build_image(is64=True, with_directories=True))
+        # Change machine to ARM64 (0xAA64) at FileHeader + 0 (0x44)
+        struct.pack_into("<H", buf, 0x44, 0xAA64)
+        # Give 32 bytes of pdata (4 entries of 8-byte ARM64 records)
+        dir_entry = 0x58 + 112 + pe_inspect.DIR_EXCEPTION * 8
+        struct.pack_into("<II", buf, dir_entry, 0x1800, 32)
+        img = pe_inspect.PeImage(bytes(buf))
+        pdata = pe_inspect._inspect_pdata(img)
+        self.assertTrue(pdata["present"])
+        self.assertEqual(pdata["format"], "arm64")
+        self.assertEqual(pdata["entry_count"], 4)  # 32 // 8
+        self.assertEqual(pdata["parsed_count"], 0)
+        self.assertIn("ARM64", pdata["rejection_reason"])
+        self.assertIn("8-byte", pdata["rejection_reason"])
+
+        with tempfile.NamedTemporaryFile(suffix=".dll", delete=False) as f:
+            f.write(buf)
+            f.flush()
+            tmp_path = f.name
+        try:
+            report = pe_inspect.inspect(tmp_path, None)
+            md = pe_inspect.to_markdown(report)
+            self.assertIn("(arm64)", md)
+            self.assertNotIn("(OK)", md)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_unknown_architecture_exception_directory_rejected(self):
+        # ARM Thumb-2 (0x1C4)
+        buf = bytearray(build_image(is64=False, with_directories=True))
+        struct.pack_into("<H", buf, 0x44, 0x01C4)
+        img = pe_inspect.PeImage(bytes(buf))
+        pdata = pe_inspect._inspect_pdata(img)
+        self.assertTrue(pdata["present"])
+        self.assertIn("unsupported", pdata["format"])
+        self.assertEqual(pdata["parsed_count"], 0)
+        self.assertIn("unsupported machine", pdata["rejection_reason"])
+
+
 if __name__ == "__main__":
     unittest.main()
