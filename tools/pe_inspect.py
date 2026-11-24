@@ -557,7 +557,9 @@ def to_markdown(r: dict) -> str:
         out += ["", "## Forwarded Exports", "", "| export | target |", "|---|---|"]
         items = sorted(forwarders.items())
         for exp_name, target in items[:50]:
-            out.append(f"| `{exp_name.replace('|', '\\|')}` | `{target.replace('|', '\\|')}` |")
+            esc_name = exp_name.replace("|", r"\|")
+            esc_target = target.replace("|", r"\|")
+            out.append(f"| `{esc_name}` | `{esc_target}` |")
         if len(items) > 50:
             out.append(f"| ... and {len(items) - 50} more | |")
     return "\n".join(out) + "\n"
