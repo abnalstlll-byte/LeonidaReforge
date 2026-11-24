@@ -50,6 +50,32 @@ This page collects the setup steps and the problems testers have run into so far
   - macOS: `brew install llvm molten-vk vulkan-headers vulkan-loader spirv-tools vulkan-tools`. The test programs
     load MoltenVK directly; set `LEONIDA_VULKAN_LOADER` to use the Vulkan loader instead.
 
+## Source-only smoke verification (DX-07)
+
+To verify a checkout quickly on any platform without game files, retail binaries, or hardware prerequisites:
+
+```bash
+# Standard-library sanity and toolchain discovery (Windows, Linux, macOS)
+python -I scripts/smoke.py --prereqs-only
+
+# Fast source-only smoke suite (< 1 second)
+python -I scripts/smoke.py --quick
+
+# Full synthetic smoke validation (compileall, no-game-data, CLI help, unit tests)
+python -I scripts/smoke.py
+
+# Machine-readable output for scripts and CI
+python -I scripts/smoke.py --json
+
+# Also available through the unified developer entry point
+python -I scripts/dev.py smoke --quick
+```
+
+Exit codes:
+- `0`: all requested synthetic checks passed.
+- `1`: one or more synthetic checks or tests failed.
+- `2`: required environment prerequisites missing (e.g., Python < 3.10) or invalid options.
+
 ## Build the test programs
 
 On a Windows runtime build with Vulkan enabled, CMake only registers `d3d12_translated_draw`, `d3d12_m2_textured`,
