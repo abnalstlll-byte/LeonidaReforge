@@ -1120,6 +1120,109 @@ class TestExportForwarders(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_case10_malformed_forwarder_targets(self):
+        """Case 10: Malformed forwarder target strings recorded as malformed_forwarder."""
+        bad_targets = [
+            b"nodot\0",
+            b".leadingdot\0",
+            b"trailingdot.\0",
+            b"other.#\0",
+            b"other.#notanumber\0",
+            b"other.#0\0",
+            b"other.#70000\0",
+            b"bad\x01target.Func\0",
+        ]
+        for target_bytes in bad_targets:
+            with self.subTest(target=target_bytes):
+                data = bytearray(with_exports([FORWARDER], {0: "TestFunc"}, base=1))
+                place(data, FORWARDER, target_bytes)
+                exp = self.inspect_buf(bytes(data))
+                self.assertEqual(exp["invalid_export_count"], 1)
+                self.assertEqual(exp["invalid_exports"][0]["symbol"], "TestFunc")
+                self.assertEqual(exp["invalid_exports"][0]["reason"], "malformed_forwarder")
+
+    def test_case11_intra_module_forwarder_self_loop(self):
+        """Case 11: Forwarder targeting itself in the same module is recorded as forwarder_loop."""
+        # sample.dll exporting Sleep -> sample.Sleep or sample.dll.Sleep
+        for target in (b"sample.Sleep\0", b"sample.dll.Sleep\0"):
+            with self.subTest(target=target):
+                data = bytearray(with_exports([FORWARDER], {0: "Sleep"}, base=1))
+                place(data, FORWARDER, target)
+                exp = self.inspect_buf(bytes(data))
+                self.assertEqual(exp["invalid_export_count"], 1)
+                self.assertEqual(exp["invalid_exports"][0]["symbol"], "Sleep")
+                self.assertEqual(exp["invalid_exports"][0]["reason"], "forwarder_loop")
+
+                with tempfile.NamedTemporaryFile(suffix=".dll", delete=False) as f:
+                    f.write(data)
+                    f.flush()
+                    tmp_path = f.name
+                try:
+                    report = pe_inspect.inspect(tmp_path, None)
+                    md = pe_inspect.to_markdown(report)
+                    self.assertIn("INVALID: 1 invalid: Sleep (forwarder_loop)", md)
+                finally:
+                    os.unlink(tmp_path)
+
+    def test_case12_intra_module_forwarder_cyclic_loop(self):
+        """Case 12: Mutual/cyclic intra-module forwarders (Alpha -> Beta, Beta -> Alpha)."""
+        fwd_a = 0x1790
+        fwd_b = 0x17B0
+        data = bytearray(with_exports([fwd_a, fwd_b], {0: "Alpha", 1: "Beta"}, base=1))
+        place(data, fwd_a, b"sample.Beta\0")
+        place(data, fwd_b, b"sample.Alpha\0")
+        exp = self.inspect_buf(bytes(data))
+        self.assertEqual(exp["invalid_export_count"], 2)
+        symbols = {inv["symbol"] for inv in exp["invalid_exports"]}
+        self.assertEqual(symbols, {"Alpha", "Beta"})
+        for inv in exp["invalid_exports"]:
+            self.assertEqual(inv["reason"], "forwarder_loop")
+
+    def test_case13_intra_module_forwarder_depth_limit(self):
+        """Case 13: Forwarder chain >= 8 within the same module is detected as a loop."""
+        # Chain F0 -> F1 -> ... -> F8
+        slots = []
+        names = {}
+        base_addr = 0x1790
+        for k in range(9):
+            addr = base_addr + k * 11
+            slots.append(addr)
+            names[k] = f"F{k}"
+        data = bytearray(with_exports(slots, names, base=1))
+        for k in range(8):
+            addr = base_addr + k * 11
+            place(data, addr, f"sample.F{k+1}\0".encode())
+        # The 9th points to an external module (valid in isolation)
+        place(data, base_addr + 8 * 11, b"kernel32.Sleep\0")
+
+        exp = self.inspect_buf(bytes(data))
+        # F0's chain length reaches 8, so F0 triggers forwarder_loop
+        f0_inv = [inv for inv in exp["invalid_exports"] if inv["symbol"] == "F0"]
+        self.assertEqual(len(f0_inv), 1)
+        self.assertEqual(f0_inv[0]["reason"], "forwarder_loop")
+
+    def test_case14_pe_header_edge_cases(self):
+        """Case 14: e_lfanew overlapping DOS header, SizeOfImage 0, SizeOfHeaders > SizeOfImage."""
+        base_data = build_image()
+
+        # e_lfanew < 0x40
+        data_short_nt = bytearray(base_data)
+        struct.pack_into("<I", data_short_nt, 0x3C, 0x20)
+        with self.assertRaisesRegex(pe_inspect.PeFormatError, "overlaps the 64-byte MS-DOS header"):
+            pe_inspect.PeImage(bytes(data_short_nt))
+
+        # SizeOfImage == 0
+        data_zero_img = bytearray(base_data)
+        struct.pack_into("<I", data_zero_img, 0x58 + 56, 0)
+        with self.assertRaisesRegex(pe_inspect.PeFormatError, "invalid SizeOfImage 0"):
+            pe_inspect.PeImage(bytes(data_zero_img))
+
+        # SizeOfHeaders > SizeOfImage
+        data_hdr_overflow = bytearray(base_data)
+        struct.pack_into("<I", data_hdr_overflow, 0x58 + 60, 0x4000)
+        with self.assertRaisesRegex(pe_inspect.PeFormatError, "exceeds SizeOfImage"):
+            pe_inspect.PeImage(bytes(data_hdr_overflow))
+
 
 if __name__ == "__main__":
     unittest.main()

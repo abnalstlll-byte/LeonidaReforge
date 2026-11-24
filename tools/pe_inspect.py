@@ -76,6 +76,8 @@ class PeImage:
             # 0x3c holds e_lfanew. Saying "no MZ header" here would blame a signature that is present.
             raise PeFormatError(f"file is {len(data)} bytes, shorter than the 64-byte MS-DOS header")
         self.nt = struct.unpack_from("<I", data, 0x3C)[0]
+        if self.nt < 0x40:
+            raise PeFormatError(f"file is {len(data)} bytes, PE header at 0x{self.nt:x} overlaps the 64-byte MS-DOS header")
         if self.nt + 24 > len(data):
             raise PeFormatError(f"file is {len(data)} bytes, too short to hold the PE header at 0x{self.nt:x}")
         if data[self.nt:self.nt + 4] != b"PE\0\0":
@@ -99,6 +101,10 @@ class PeImage:
         self.size_of_headers = struct.unpack_from("<I", data, opt + 60)[0]
         self.subsystem = struct.unpack_from("<H", data, opt + 68)[0]
         self.dll_characteristics = struct.unpack_from("<H", data, opt + 70)[0]
+        if self.size_of_image == 0:
+            raise PeFormatError("invalid SizeOfImage 0")
+        if self.size_of_headers > self.size_of_image:
+            raise PeFormatError(f"SizeOfHeaders {self.size_of_headers} exceeds SizeOfImage {self.size_of_image}")
 
         # NumberOfRvaAndSizes counts the data directories: a slot past it is not a directory, whatever bytes it
         # holds (runtime/src/pe_loader.cpp reads them the same way). The count is the dword before the table.
@@ -270,6 +276,7 @@ def _inspect_exports(img: PeImage) -> dict:
 
     names = []
     forwarders = {}
+    forwarder_info = {}
     invalid_exports = []
     invalid_export_count = 0
 
@@ -291,7 +298,18 @@ def _inspect_exports(img: PeImage) -> dict:
             if not target:
                 record_invalid(key, ord_num, exp_rva, "unreadable_forwarder")
                 target = "?"
+            else:
+                dot = target.rfind(".")
+                if dot <= 0 or dot + 1 >= len(target) or any(ord(c) < 0x20 or ord(c) >= 0x7F for c in target):
+                    record_invalid(key, ord_num, exp_rva, "malformed_forwarder")
+                else:
+                    fwd_sym = target[dot + 1:]
+                    if fwd_sym.startswith("#"):
+                        ord_str = fwd_sym[1:]
+                        if not ord_str.isdigit() or int(ord_str) <= 0 or int(ord_str) > 0xFFFF:
+                            record_invalid(key, ord_num, exp_rva, "malformed_forwarder")
             forwarders[key] = target
+            forwarder_info[key] = (ord_num, exp_rva, target)
         elif exp_rva >= img.size_of_image:
             record_invalid(key, ord_num, exp_rva, "out_of_bounds")
 
@@ -322,6 +340,40 @@ def _inspect_exports(img: PeImage) -> dict:
                 key = f"#{base + i}"
                 names.append(key)
                 process_export(key, i, exp_rva)
+
+    own_mod = img.string_at(_name) if _name else ""
+
+    def _stem(m: str) -> str:
+        s = m.lower()
+        return s[:-4] if s.endswith(".dll") else s
+
+    own_stem = _stem(own_mod) if own_mod else ""
+    if own_stem:
+        for fwd_key, (ord_num, exp_rva, target) in forwarder_info.items():
+            if target == "?" or "." not in target:
+                continue
+            dot = target.rfind(".")
+            if dot <= 0 or _stem(target[:dot]) != own_stem:
+                continue
+            visited = [fwd_key]
+            curr_target = target
+            has_loop = False
+            while True:
+                c_dot = curr_target.rfind(".")
+                if c_dot <= 0 or _stem(curr_target[:c_dot]) != own_stem:
+                    break
+                next_sym = curr_target[c_dot + 1:]
+                if next_sym in visited or len(visited) >= 8:
+                    has_loop = True
+                    break
+                if next_sym not in forwarders:
+                    break
+                visited.append(next_sym)
+                curr_target = forwarders[next_sym]
+                if curr_target == "?":
+                    break
+            if has_loop:
+                record_invalid(fwd_key, ord_num, exp_rva, "forwarder_loop")
 
     return {
         "exports": names,
